@@ -1,78 +1,303 @@
+# TODO: Add support for nested field access (e.g., header.stamp)
+# TODO: Add support for setting complex static types (e.g., ColorRGBA) via params
+# TODO: Add option for python expressions for transformation
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rclpy.qos import QoSProfile
-from rclpy.qos import QoSDurabilityPolicy, QoSReliabilityPolicy
+from rcl_interfaces.msg import ParameterDescriptor
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from rosidl_runtime_py.utilities import get_message as get_message_class
+import sys
 
-class FieldSubscriber(Node):
+class FieldMapperNode(Node):
     def __init__(self):
-        super().__init__('field_subscriber')
+        super().__init__('field_mapper_node')
 
-        # Declare parameters for topic name, field, and message type
-        self.declare_parameter('topic_name', '/example_topic')
-        self.declare_parameter('field_name', 'data')
-        self.declare_parameter('message_type', 'std_msgs/msg/String') # Add default
+        # --- Parameter Declarations ---
+        self.declare_parameter('input_topic_name', '/input_topic')
+        self.declare_parameter('input_message_type', 'std_msgs/msg/String')
+        self.declare_parameter('output_topic_name', '/output_topic')
+        self.declare_parameter('output_message_type', 'std_msgs/msg/String')
 
-        # Get parameter values
-        self.topic_name = self.get_parameter('topic_name').get_parameter_value().string_value
-        self.field_name = self.get_parameter('field_name').get_parameter_value().string_value
-        self.message_type_str = self.get_parameter('message_type').get_parameter_value().string_value
+        # Declare without default value or descriptor
+        self.declare_parameter('field_mappings')
+        self.get_logger().info(f"Declared parameter 'field_mappings' (no default/descriptor)")
 
-        # Create a subscription
-        qos_profile = QoSProfile(
+        # Declare without default value or descriptor
+        self.declare_parameter('static_fields')
+        self.get_logger().info(f"Declared parameter 'static_fields' (no default/descriptor)")
+
+
+        # --- Get Parameters ---
+        self.input_topic_name = self.get_parameter('input_topic_name').get_parameter_value().string_value
+        self.input_message_type_str = self.get_parameter('input_message_type').get_parameter_value().string_value
+        self.output_topic_name = self.get_parameter('output_topic_name').get_parameter_value().string_value
+        self.output_message_type_str = self.get_parameter('output_message_type').get_parameter_value().string_value
+
+        # Log the parameter object itself before getting the value
+        field_mappings_param = self.get_parameter('field_mappings')
+        self.get_logger().info(f"Parameter object 'field_mappings': name={field_mappings_param.name}, type={field_mappings_param.type_}, value={field_mappings_param.value}")
+
+        static_fields_param = self.get_parameter('static_fields')
+        self.get_logger().info(f"Parameter object 'static_fields': name={static_fields_param.name}, type={static_fields_param.type_}, value={static_fields_param.value}")
+
+        # Now try to get the value
+        try:
+            # Check the type before attempting to get the specific array value
+            if field_mappings_param.type_ == Parameter.Type.STRING_ARRAY:
+                field_mapping_strs = field_mappings_param.get_parameter_value().string_array_value
+            else:
+                self.get_logger().warn(f"Parameter 'field_mappings' has unexpected type {field_mappings_param.type_}. Using empty list.")
+                field_mapping_strs = []
+
+            if static_fields_param.type_ == Parameter.Type.STRING_ARRAY:
+                static_field_strs = static_fields_param.get_parameter_value().string_array_value
+            else:
+                 self.get_logger().warn(f"Parameter 'static_fields' has unexpected type {static_fields_param.type_}. Using empty list.")
+                 static_field_strs = []
+
+        except Exception as e:
+             self.get_logger().error(f"Error getting parameter values: {e}")
+             # Set to default empty lists to potentially allow further initialization for debugging
+             field_mapping_strs = []
+             static_field_strs = []
+
+
+        self.get_logger().info(f"Loaded field_mappings: {field_mapping_strs}")
+        self.get_logger().info(f"Loaded static_fields: {static_field_strs}") # Add log for static fields too
+
+        # --- Parse Mappings & Static Fields ---
+        self.parsed_mappings = self._parse_mappings(field_mapping_strs)
+        self.parsed_static_fields = self._parse_static_fields(static_field_strs)
+
+        # --- Initialization State ---
+        self.subscription = None
+        self.publisher = None
+        self.output_msg_type = None
+        init_ok = True
+
+        # Check parsing results (allow empty lists, but not None which indicates format errors)
+        if self.parsed_mappings is None:
+            self.get_logger().error("Failed to parse 'field_mappings' due to format errors.")
+            init_ok = False
+        if self.parsed_static_fields is None:
+            self.get_logger().error("Failed to parse 'static_fields' due to format errors.")
+            init_ok = False
+
+        if not init_ok:
+            self.get_logger().fatal("Node initialization failed due to parameter parsing errors.")
+            return # Stop initialization here
+
+        # --- Setup Subscription ---
+        sub_qos_profile = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
             depth=10
         )
-
-        # Dynamically determine the message type from the parameter
         try:
-            # Use get_message_class (renamed from get_message for clarity)
-            msg_type = get_message_class(self.message_type_str)
+            input_msg_type = get_message_class(self.input_message_type_str)
             self.subscription = self.create_subscription(
-                msg_type,
-                self.topic_name,
+                input_msg_type,
+                self.input_topic_name,
                 self.listener_callback,
-                qos_profile
+                sub_qos_profile
             )
             self.get_logger().info(
-                f"Subscribed to topic: {self.topic_name} "
-                f"with type: {self.message_type_str}"
+                f"Subscribed to topic: {self.input_topic_name} "
+                f"with type: {self.input_message_type_str}"
             )
         except (ValueError, AttributeError, ModuleNotFoundError, Exception) as e:
-            self.get_logger().error(
-                f"Failed to import message type '{self.message_type_str}' "
-                f"or create subscription for topic '{self.topic_name}': {e}"
+            self.get_logger().fatal( # Use fatal as node likely unusable
+                f"Failed to import input message type '{self.input_message_type_str}' "
+                f"or create subscription for topic '{self.input_topic_name}': {e}"
             )
-            self.subscription = None
+            init_ok = False # Mark initialization as failed
+
+        # --- Setup Publisher ---
+        if init_ok: # Only proceed if subscription setup was okay
+            pub_qos_profile = QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.VOLATILE,
+                depth=10
+            )
+            try:
+                self.output_msg_type = get_message_class(self.output_message_type_str)
+                self.publisher = self.create_publisher(
+                    self.output_msg_type,
+                    self.output_topic_name,
+                    pub_qos_profile
+                )
+                self.get_logger().info(
+                    f"Publishing to topic: {self.output_topic_name} "
+                    f"with type: {self.output_message_type_str}"
+                )
+            except (ValueError, AttributeError, ModuleNotFoundError, Exception) as e:
+                self.get_logger().fatal( # Use fatal as node likely unusable
+                    f"Failed to import output message type '{self.output_message_type_str}' "
+                    f"or create publisher for topic '{self.output_topic_name}': {e}"
+                )
+                init_ok = False # Mark initialization as failed
+
+        # --- Final Initialization Check ---
+        if not init_ok:
+             # Clean up subscription if it was created before publisher failed
+             if self.subscription:
+                 self.destroy_subscription(self.subscription)
+                 self.subscription = None
+             self.publisher = None # Ensure publisher is None if failed
+             # Let main handle the shutdown based on None checks
+
+    def _parse_mappings(self, mapping_strs):
+        """Parses 'input:output' strings. Returns dict or None on format error."""
+        mappings = {}
+        if not mapping_strs:
+            self.get_logger().info("No field mappings provided via 'field_mappings'.")
+            return mappings # Empty dict is valid
+
+        for item in mapping_strs:
+            parts = item.split(':')
+            if len(parts) == 2:
+                input_field = parts[0].strip()
+                output_field = parts[1].strip()
+                if input_field and output_field:
+                    mappings[input_field] = output_field
+                else:
+                    self.get_logger().error(f"Invalid mapping entry (empty field): '{item}'. Skipping.")
+                    # Continue processing other mappings
+            else:
+                self.get_logger().error(f"Invalid mapping format: '{item}'. Use 'input_field:output_field'. Skipping.")
+                # Continue processing other mappings
+
+        self.get_logger().info(f"Parsed field mappings: {mappings}")
+        return mappings
+
+    def _parse_static_fields(self, static_field_strs):
+        """Parses 'field=value' strings. Returns dict or None on format error."""
+        static_fields = {}
+        if not static_field_strs:
+            self.get_logger().info("No static fields provided via 'static_fields'.")
+            return static_fields # Empty dict is valid
+
+        for item in static_field_strs:
+            parts = item.split('=', 1) # Split only on the first '='
+            if len(parts) == 2:
+                field_name = parts[0].strip()
+                value_str = parts[1].strip()
+                if not field_name:
+                    self.get_logger().error(f"Invalid static field entry (empty field name): '{item}'. Skipping.")
+                    continue
+
+                # Attempt type conversion (float -> int -> bool -> string)
+                try:
+                    # Try converting to float first
+                    value = float(value_str)
+                    # Check if the original string looks like an int (no decimal, no 'e')
+                    # to decide if conversion to int is appropriate.
+                    if '.' not in value_str and 'e' not in value_str.lower():
+                         if value.is_integer():
+                             value = int(value)
+                    # Otherwise, keep it as a float
+                except ValueError:
+                    # Not float, check bool
+                    if value_str.lower() == 'true':
+                        value = True
+                    elif value_str.lower() == 'false':
+                        value = False
+                    else:
+                        # Keep as string if not bool
+                        value = value_str
+                        # Remove quotes if value is quoted string "like this" or 'like this'
+                        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                            value = value[1:-1]
+
+                static_fields[field_name] = value
+            else:
+                self.get_logger().error(f"Invalid static field format: '{item}'. Use 'output_field=value'. Skipping.")
+                # Continue processing other static fields
+
+        self.get_logger().info(f"Parsed static fields: {static_fields}")
+        return static_fields
 
     def listener_callback(self, msg):
-        # Extract the specified field from the message
+        """Callback for input topic. Creates, populates, and publishes output message."""
+        if not self.publisher or not self.output_msg_type:
+            # This check might be redundant if init logic is robust, but safe to keep
+            self.get_logger().warn("Publisher or output type not initialized, skipping message.")
+            return
+
         try:
-            field_value = getattr(msg, self.field_name)
-            self.get_logger().info(f"Field '{self.field_name}' value: {field_value}")
-        except AttributeError:
-            self.get_logger().error(
-                f"Field '{self.field_name}' does not exist in message type "
-                f"'{self.message_type_str}' on topic '{self.topic_name}'."
-            )
+            # Create an instance of the output message type
+            output_msg = self.output_msg_type()
+
+            # 1. Apply static field assignments
+            # Check parsed_static_fields is not None (parsing didn't fail)
+            if self.parsed_static_fields is not None:
+                for field_name, value in self.parsed_static_fields.items():
+                    try:
+                        # TODO: Add handling for nested fields (e.g., 'current_color.r')
+                        setattr(output_msg, field_name, value)
+                    except AttributeError:
+                        self.get_logger().warn(
+                            f"Static field assignment skipped: Output field '{field_name}' "
+                            f"not found in message type '{self.output_message_type_str}'."
+                        )
+                    except TypeError as te:
+                         self.get_logger().warn(
+                            f"Static field assignment skipped for '{field_name}={value}': Type mismatch. "
+                            f"Is the value '{value}' (type: {type(value).__name__}) compatible with the field type? Error: {te}"
+                         )
+
+            # 2. Apply field-to-field mappings
+            # Check parsed_mappings is not None (parsing didn't fail)
+            if self.parsed_mappings is not None:
+                for input_field, output_field in self.parsed_mappings.items():
+                    try:
+                        # TODO: Add handling for nested fields
+                        input_value = getattr(msg, input_field)
+                        setattr(output_msg, output_field, input_value)
+                    except AttributeError as e:
+                        self.get_logger().warn(
+                            f"Mapping skipped: '{input_field}' -> '{output_field}'. AttributeError: {e}. "
+                            f"Check if fields exist in input ('{self.input_message_type_str}') "
+                            f"or output ('{self.output_message_type_str}') types."
+                        )
+                    except TypeError as te:
+                         self.get_logger().warn(
+                            f"Mapping skipped: '{input_field}' -> '{output_field}'. TypeError: {te}. "
+                            f"Are the field types compatible?"
+                         )
+
+            # Publish the message
+            self.publisher.publish(output_msg)
+
+        except Exception as e:
+            # Catch-all for unexpected errors during message creation/population/publishing
+            self.get_logger().error(f"Unexpected error in listener_callback: {e}", exc_info=True)
+
 
 def main(args=None):
     rclpy.init(args=args)
-    node = FieldSubscriber()
-
+    node = None
+    exit_code = 0
     try:
-        # Check if subscription was created successfully before spinning
-        if node.subscription is None:
-            node.get_logger().error("Subscription could not be created. Shutting down.")
+        node = FieldMapperNode()
+        if node.subscription is None or node.publisher is None:
+            node.get_logger().error("Initialization failed. Exiting.")
+            exit_code = 1
         else:
             rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+    except Exception as e:
+        if node:
+            node.get_logger().fatal(f"Unhandled exception: {e}")
+        else:
+            print(f"Unhandled exception during node creation: {e}")
+        exit_code = 1
     finally:
-        node.destroy_node()
+        if node:
+            node.destroy_node()
         rclpy.shutdown()
+    sys.exit(exit_code)
+
 
 if __name__ == '__main__':
     main()

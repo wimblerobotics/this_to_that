@@ -14,13 +14,7 @@ find_package(nav_msgs REQUIRED)
 # Install Python modules defined in setup.py
 ament_python_install_package(${PROJECT_NAME})
 
-# Install launch files and config
-install(DIRECTORY
-  # config
-  launch
-  DESTINATION share/${PROJECT_NAME}
-  OPTIONAL
-)
+
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
