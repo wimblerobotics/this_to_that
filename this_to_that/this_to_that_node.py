@@ -19,13 +19,13 @@ class FieldMapperNode(Node):
         self.declare_parameter('output_topic_name', '/output_topic')
         self.declare_parameter('output_message_type', 'std_msgs/msg/String')
 
-        # Declare without default value or descriptor
-        self.declare_parameter('field_mappings')
-        self.get_logger().info(f"Declared parameter 'field_mappings' (no default/descriptor)")
+        # Use string parameter for mappings
+        self.declare_parameter('field_mappings_str', '')
+        self.get_logger().info(f"Declared parameter 'field_mappings_str' as STRING")
 
-        # Declare without default value or descriptor
-        self.declare_parameter('static_fields')
-        self.get_logger().info(f"Declared parameter 'static_fields' (no default/descriptor)")
+        # Use string parameter for static fields
+        self.declare_parameter('static_fields_str', '') # Default to empty string
+        self.get_logger().info(f"Declared parameter 'static_fields_str' as STRING")
 
 
         # --- Get Parameters ---
@@ -34,41 +34,18 @@ class FieldMapperNode(Node):
         self.output_topic_name = self.get_parameter('output_topic_name').get_parameter_value().string_value
         self.output_message_type_str = self.get_parameter('output_message_type').get_parameter_value().string_value
 
-        # Log the parameter object itself before getting the value
-        field_mappings_param = self.get_parameter('field_mappings')
-        self.get_logger().info(f"Parameter object 'field_mappings': name={field_mappings_param.name}, type={field_mappings_param.type_}, value={field_mappings_param.value}")
+        # Get the string parameters
+        field_mapping_config_str = self.get_parameter('field_mappings_str').get_parameter_value().string_value
+        self.get_logger().info(f"Loaded field_mappings_str: '{field_mapping_config_str}'")
 
-        static_fields_param = self.get_parameter('static_fields')
-        self.get_logger().info(f"Parameter object 'static_fields': name={static_fields_param.name}, type={static_fields_param.type_}, value={static_fields_param.value}")
+        static_fields_config_str = self.get_parameter('static_fields_str').get_parameter_value().string_value
+        self.get_logger().info(f"Loaded static_fields_str: '{static_fields_config_str}'")
 
-        # Now try to get the value
-        try:
-            # Check the type before attempting to get the specific array value
-            if field_mappings_param.type_ == Parameter.Type.STRING_ARRAY:
-                field_mapping_strs = field_mappings_param.get_parameter_value().string_array_value
-            else:
-                self.get_logger().warn(f"Parameter 'field_mappings' has unexpected type {field_mappings_param.type_}. Using empty list.")
-                field_mapping_strs = []
-
-            if static_fields_param.type_ == Parameter.Type.STRING_ARRAY:
-                static_field_strs = static_fields_param.get_parameter_value().string_array_value
-            else:
-                 self.get_logger().warn(f"Parameter 'static_fields' has unexpected type {static_fields_param.type_}. Using empty list.")
-                 static_field_strs = []
-
-        except Exception as e:
-             self.get_logger().error(f"Error getting parameter values: {e}")
-             # Set to default empty lists to potentially allow further initialization for debugging
-             field_mapping_strs = []
-             static_field_strs = []
-
-
-        self.get_logger().info(f"Loaded field_mappings: {field_mapping_strs}")
-        self.get_logger().info(f"Loaded static_fields: {static_field_strs}") # Add log for static fields too
 
         # --- Parse Mappings & Static Fields ---
-        self.parsed_mappings = self._parse_mappings(field_mapping_strs)
-        self.parsed_static_fields = self._parse_static_fields(static_field_strs)
+        # Pass the config strings to the updated parsing functions
+        self.parsed_mappings = self._parse_mappings_from_string(field_mapping_config_str)
+        self.parsed_static_fields = self._parse_static_fields_from_string(static_fields_config_str) # Use new function
 
         # --- Initialization State ---
         self.subscription = None
@@ -147,14 +124,21 @@ class FieldMapperNode(Node):
              self.publisher = None # Ensure publisher is None if failed
              # Let main handle the shutdown based on None checks
 
-    def _parse_mappings(self, mapping_strs):
-        """Parses 'input:output' strings. Returns dict or None on format error."""
+    def _parse_mappings_from_string(self, mapping_config_str):
+        """Parses 'input1:output1,input2:output2' string. Returns dict."""
         mappings = {}
-        if not mapping_strs:
-            self.get_logger().info("No field mappings provided via 'field_mappings'.")
+        if not mapping_config_str:
+            self.get_logger().info("No field mappings provided via 'field_mappings_str'.")
             return mappings # Empty dict is valid
 
-        for item in mapping_strs:
+        # Split the string by commas first
+        mapping_pairs = mapping_config_str.split(',')
+
+        for item in mapping_pairs:
+            item = item.strip() # Remove leading/trailing whitespace from pair
+            if not item:
+                continue # Skip empty entries if there are trailing/double commas
+
             parts = item.split(':')
             if len(parts) == 2:
                 input_field = parts[0].strip()
@@ -163,22 +147,27 @@ class FieldMapperNode(Node):
                     mappings[input_field] = output_field
                 else:
                     self.get_logger().error(f"Invalid mapping entry (empty field): '{item}'. Skipping.")
-                    # Continue processing other mappings
             else:
                 self.get_logger().error(f"Invalid mapping format: '{item}'. Use 'input_field:output_field'. Skipping.")
-                # Continue processing other mappings
 
-        self.get_logger().info(f"Parsed field mappings: {mappings}")
+        self.get_logger().info(f"Parsed field mappings from string: {mappings}")
         return mappings
 
-    def _parse_static_fields(self, static_field_strs):
-        """Parses 'field=value' strings. Returns dict or None on format error."""
+    def _parse_static_fields_from_string(self, static_fields_config_str):
+        """Parses 'field1=value1,field2=value2' string. Returns dict."""
         static_fields = {}
-        if not static_field_strs:
-            self.get_logger().info("No static fields provided via 'static_fields'.")
+        if not static_fields_config_str:
+            self.get_logger().info("No static fields provided via 'static_fields_str'.")
             return static_fields # Empty dict is valid
 
-        for item in static_field_strs:
+        # Split the string by commas first
+        static_field_pairs = static_fields_config_str.split(',')
+
+        for item in static_field_pairs:
+            item = item.strip() # Remove leading/trailing whitespace from pair
+            if not item:
+                continue # Skip empty entries
+
             parts = item.split('=', 1) # Split only on the first '='
             if len(parts) == 2:
                 field_name = parts[0].strip()
@@ -189,39 +178,30 @@ class FieldMapperNode(Node):
 
                 # Attempt type conversion (float -> int -> bool -> string)
                 try:
-                    # Try converting to float first
                     value = float(value_str)
-                    # Check if the original string looks like an int (no decimal, no 'e')
-                    # to decide if conversion to int is appropriate.
                     if '.' not in value_str and 'e' not in value_str.lower():
                          if value.is_integer():
                              value = int(value)
-                    # Otherwise, keep it as a float
                 except ValueError:
-                    # Not float, check bool
                     if value_str.lower() == 'true':
                         value = True
                     elif value_str.lower() == 'false':
                         value = False
                     else:
-                        # Keep as string if not bool
                         value = value_str
-                        # Remove quotes if value is quoted string "like this" or 'like this'
                         if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
                             value = value[1:-1]
 
                 static_fields[field_name] = value
             else:
                 self.get_logger().error(f"Invalid static field format: '{item}'. Use 'output_field=value'. Skipping.")
-                # Continue processing other static fields
 
-        self.get_logger().info(f"Parsed static fields: {static_fields}")
+        self.get_logger().info(f"Parsed static fields from string: {static_fields}")
         return static_fields
 
     def listener_callback(self, msg):
         """Callback for input topic. Creates, populates, and publishes output message."""
         if not self.publisher or not self.output_msg_type:
-            # This check might be redundant if init logic is robust, but safe to keep
             self.get_logger().warn("Publisher or output type not initialized, skipping message.")
             return
 
@@ -230,11 +210,9 @@ class FieldMapperNode(Node):
             output_msg = self.output_msg_type()
 
             # 1. Apply static field assignments
-            # Check parsed_static_fields is not None (parsing didn't fail)
             if self.parsed_static_fields is not None:
                 for field_name, value in self.parsed_static_fields.items():
                     try:
-                        # TODO: Add handling for nested fields (e.g., 'current_color.r')
                         setattr(output_msg, field_name, value)
                     except AttributeError:
                         self.get_logger().warn(
@@ -248,11 +226,9 @@ class FieldMapperNode(Node):
                          )
 
             # 2. Apply field-to-field mappings
-            # Check parsed_mappings is not None (parsing didn't fail)
             if self.parsed_mappings is not None:
                 for input_field, output_field in self.parsed_mappings.items():
                     try:
-                        # TODO: Add handling for nested fields
                         input_value = getattr(msg, input_field)
                         setattr(output_msg, output_field, input_value)
                     except AttributeError as e:
@@ -271,7 +247,6 @@ class FieldMapperNode(Node):
             self.publisher.publish(output_msg)
 
         except Exception as e:
-            # Catch-all for unexpected errors during message creation/population/publishing
             self.get_logger().error(f"Unexpected error in listener_callback: {e}", exc_info=True)
 
 

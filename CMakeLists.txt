@@ -9,11 +9,27 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rclpy REQUIRED)
-find_package(nav_msgs REQUIRED)
+find_package(rcl_interfaces REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(wifi_viz REQUIRED)
+find_package(std_msgs REQUIRED)
 
-# Install Python modules defined in setup.py
+# Install Python modules AND data files defined in setup.py
 ament_python_install_package(${PROJECT_NAME})
 
+# Remove CMake installation rules for config and launch files
+# Let setup.py handle these
+
+# install(FILES
+#   config/config.yaml
+#   DESTINATION share/${PROJECT_NAME}/config
+# )
+
+# install(DIRECTORY
+#   launch
+#   DESTINATION share/${PROJECT_NAME}/launch
+#   OPTIONAL
+# )
 
 
 if(BUILD_TESTING)

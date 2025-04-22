@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>this_to_that</name>
-  <version>0.0.1</version>
+  <version>1.0.0</version>
   <description>Convert a ROS2 topic to another kind of ROS 2 toic.</description>
   <maintainer email="mike@wimblerobotics.com">Michael Wimble</maintainer>
   <license>MIT</license>
@@ -12,6 +12,8 @@
 
   <depend>rclpy</depend>
   <depend>rcl_interfaces</depend>  <!-- Add this line -->
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
 
   <!-- <depend>nav_msgs</depend> -->
 
