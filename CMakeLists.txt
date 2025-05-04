@@ -11,7 +11,7 @@ find_package(ament_cmake_python REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(wifi_viz REQUIRED)
+find_package(min_max_curr_rviz_overlay REQUIRED)  # Depend on custom message package instead of wifi_viz
 find_package(std_msgs REQUIRED)
 
 # Install Python modules AND data files defined in setup.py
